@@ -1,0 +1,7 @@
+[Unit]
+Description="Backup mariadb database"
+Requires=docker.service
+After=docker.service
+
+[Service]
+ExecStart=/root/.export_mariadb.sh
