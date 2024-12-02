@@ -27,7 +27,7 @@ do
           break;;
         "Create Site")
           echo -e "\e[36mCreating site...\e[0m"
-          curl -s https://raw.githubusercontent.com/BOOST-Creative/docker-server-setup/main/newsite.sh > ~/.newsite.sh && chmod +x ~/.newsite.sh && ~/.newsite.sh
+          curl -s https://raw.githubusercontent.com/andybz/docker-server-setup/main/newsite.sh > ~/.newsite.sh && chmod +x ~/.newsite.sh && ~/.newsite.sh
           break;;
         "Delete Site & Files")
           echo -e "\e[36mDeleting site (seriously, this will completely delete everything)...\e[0m"
