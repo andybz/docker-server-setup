@@ -11,7 +11,7 @@ GREEN="\e[32m"
 CYAN="\e[36m"
 YELLOW="\e[33m"
 ENDCOLOR="\e[0m"
-REPO="BOOST-Creative/docker-server-setup"
+REPO="andybz/docker-server-setup"
 CUR_TIMEZONE=$(timedatectl show | grep zone | sed 's/Timezone=//g');
 MARIA_DB_ROOT_PASSWORD=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-20}" | sed 's/-/_/g')
 NPM_DB_PASSWORD=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-20}" | sed 's/-/_/g')
@@ -184,7 +184,7 @@ done
   echo 'alias dcd="docker compose down"';
   echo 'alias dcu="docker compose up -d"';
   echo 'alias dcr="docker compose restart"';
-  echo 'alias boost="curl -s https://raw.githubusercontent.com/BOOST-Creative/docker-server-setup/main/boost.sh > ~/.boost.sh && chmod +x ~/.boost.sh && ~/.boost.sh"';
+  echo 'alias boost="curl -s https://raw.githubusercontent.com/andybz/docker-server-setup/main/boost.sh > ~/.boost.sh && chmod +x ~/.boost.sh && ~/.boost.sh"';
   echo 'alias ctop="docker run --rm -ti --volume /var/run/docker.sock:/var/run/docker.sock:ro quay.io/vektorlab/ctop:latest"';
   echo 'echo -e "\nPortainer: \e[34mhttp://localhost:6900\n\e[0mNginx Proxy Manager: \e[34mhttp://localhost:6901\n\e[0mphpMyAdmin: \e[34mhttp://localhost:6902\n\e[0mFile Browser: \e[34mhttp://localhost:6903\n\e[0mKopia: \e[34mhttp://localhost:6904\e[0m (kopia:'"$KOPIA_PASSWORD"')\nDozzle: \e[34mhttp://localhost:6905\n\n\e[0mRun ctop to manage containers and view metrics.\n"';
   echo 'type ~/firewall.sh &>/dev/null && ./firewall.sh';
