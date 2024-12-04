@@ -163,10 +163,10 @@ echo -e "\n${CYAN}Updating SSH config...${ENDCOLOR}"
   echo "PubkeyAuthentication yes"
   echo "PasswordAuthentication no"
   echo "X11Forwarding no"
-} >> /etc/ssh/sshd_config
+} >> /etc/ssh/ssh_config
 
 echo -e "${CYAN}Restarting SSH daemon...${ENDCOLOR}\n"
-systemctl restart sshd
+systemctl restart ssh
 
 # verify ssh key is correct
 cat /home/"$username"/.ssh/authorized_keys
