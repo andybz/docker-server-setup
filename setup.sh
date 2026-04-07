@@ -128,6 +128,7 @@ touch /home/"$username"/server/npm/data/logs/proxy-host-{1..5}_access.log
 # fix permissions
 chown "$username": /home/"$username"/sites /home/"$username"/server/docker-compose.yml /home/"$username"/firewall.sh
 # nobody user bc that's what wp container uses
+mkdir -p /home/"$username"/server/filebrowser
 chown -R nobody:nogroup /home/"$username"/server/filebrowser
 
 # add user to docker users
@@ -157,16 +158,42 @@ systemctl enable kopiaServer.service > /dev/null 2>&1
 
 # update SSH config
 echo -e "\n${CYAN}Updating SSH config...${ENDCOLOR}"
-{
-  echo "Port $ssh_port" 
-  echo "PermitRootLogin prohibit-password"
-  echo "PubkeyAuthentication yes"
-  echo "PasswordAuthentication no"
-  echo "X11Forwarding no"
-} >> /etc/ssh/ssh_config
+SSHD_CONFIG=/etc/ssh/sshd_config
+cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
 
-echo -e "${CYAN}Restarting SSH daemon...${ENDCOLOR}\n"
-systemctl restart ssh
+if grep -qE '^\s*#?\s*Port\s+' "$SSHD_CONFIG"; then
+  sed -i "s/^\s*#\?\s*Port\s\+.*/Port $ssh_port/" "$SSHD_CONFIG"
+else
+  echo "Port $ssh_port" >> "$SSHD_CONFIG"
+fi
+
+if grep -qE '^\s*#?\s*PermitRootLogin\s+' "$SSHD_CONFIG"; then
+  sed -i 's/^\s*#\?\s*PermitRootLogin\s\+.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
+else
+  echo "PermitRootLogin prohibit-password" >> "$SSHD_CONFIG"
+fi
+
+if grep -qE '^\s*#?\s*PubkeyAuthentication\s+' "$SSHD_CONFIG"; then
+  sed -i 's/^\s*#\?\s*PubkeyAuthentication\s\+.*/PubkeyAuthentication yes/' "$SSHD_CONFIG"
+else
+  echo "PubkeyAuthentication yes" >> "$SSHD_CONFIG"
+fi
+
+if grep -qE '^\s*#?\s*PasswordAuthentication\s+' "$SSHD_CONFIG"; then
+  sed -i 's/^\s*#\?\s*PasswordAuthentication\s\+.*/PasswordAuthentication no/' "$SSHD_CONFIG"
+else
+  echo "PasswordAuthentication no" >> "$SSHD_CONFIG"
+fi
+
+if grep -qE '^\s*#?\s*X11Forwarding\s+' "$SSHD_CONFIG"; then
+  sed -i 's/^\s*#\?\s*X11Forwarding\s\+.*/X11Forwarding no/' "$SSHD_CONFIG"
+else
+  echo "X11Forwarding no" >> "$SSHD_CONFIG"
+fi
+
+echo -e "${CYAN}Validating and reloading SSH daemon...${ENDCOLOR}\n"
+sshd -t
+systemctl reload ssh || systemctl restart ssh
 
 # verify ssh key is correct
 cat /home/"$username"/.ssh/authorized_keys
