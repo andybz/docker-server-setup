@@ -2,26 +2,37 @@
 
 CUR_USER="$(whoami)"
 
+function select_project() {
+  echo "==========================="
+  echo " SELECT PROJECT"
+  echo "==========================="
+  PS3="> "
+  select sitename in $(find ~/sites/* -maxdepth 0 -type d -exec basename {} \;); do
+    test -n "$sitename" && break;
+    echo ">>> Invalid Selection";
+  done
+}
+
 PS3="Choose action: "
 
-select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Prune Docker Images" "MariaDB Upgrade" "Quit"
+select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Prune Docker Images" "MariaDB Upgrade" "Quit" "DB Search Replace"
 do
     case $action in
         "Start site")
           echo -e "\e[36mStarting site...\e[0m"
-          read -r -p "Enter site name or abbreviation (no spaces): " sitename
-           docker compose -f "/home/$CUR_USER/sites/$sitename/docker-compose.yml" up -d
-           echo -e "\e[32mSite started 👍\e[0m"
+          select_project
+          docker compose -f "/home/$CUR_USER/sites/$sitename/docker-compose.yml" up -d
+          echo -e "\e[32mSite started 👍\e[0m"
           break;;
         "Stop Site")
           echo -e "\e[36mStopping site...\e[0m"
-          read -r -p "Enter site name or abbreviation (no spaces): " sitename
+          select_project
           docker compose -f "/home/$CUR_USER/sites/$sitename/docker-compose.yml" stop
           echo -e "\e[32mSite stopped 👍\e[0m"
           break;;
         "Restart Site")
           echo -e "\e[36mRestarting site...\e[0m"
-          read -r -p "Enter site name or abbreviation (no spaces): " sitename
+          select_project
           docker compose -f "/home/$CUR_USER/sites/$sitename/docker-compose.yml" restart
           echo -e "\e[32mSite restarted 👍\e[0m"
           break;;
@@ -38,7 +49,7 @@ do
           break;;
         "Fix Permissions")
           echo -e "\e[36mFixing permissions...\e[0m"
-          read -r -p "Enter site name or abbreviation (no spaces): " sitename
+          select_project
           sudo chown -R nobody: "/home/$CUR_USER/sites/$sitename/wordpress"
           sudo find "/home/$CUR_USER/sites/$sitename" -type d -exec chmod 755 {} +
           sudo find "/home/$CUR_USER/sites/$sitename/wordpress" -type f -exec chmod 644 {} +
@@ -50,8 +61,8 @@ do
           echo -e "\e[32mSSH key added 👍\e[0m"
           break;;
         "Container Shell")
-          read -r -p "Enter site name or abbreviation (no spaces): " sitename
-          echo ""
+          select_project
+          echo -e "\e[36mConnecting shell for $sitename...\e[0m"
           docker exec -it "$sitename" ash
           break;;
         "Fail2ban Status")
@@ -78,11 +89,17 @@ do
         "MariaDB Upgrade")
           docker exec mariadb sh -c 'mysql_upgrade -uroot -p"$MYSQL_ROOT_PASSWORD"'
           break;;
+        "DB Search Replace")
+          select_project
+          read -r -p "Enter search string: " searchstring
+          read -r -p "Enter replace string: " replacestring
+          docker exec "$sitename" sh -c "cd /usr/src/wordpress && wp search-replace '$searchstring' '$replacestring' --all-tables"
+          break;;
         "Quit")
           echo "Goodbye 👍"
           break;;
         *)
           echo "huh?";;
     esac
-  rm ./.boost.sh
+  rm ./.andybz.sh
 done

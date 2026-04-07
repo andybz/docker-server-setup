@@ -58,11 +58,11 @@ To remove access for an SSH key, edit `~/.ssh/authorized_keys` and remove the li
 
 If you want to monitor uptime, check out **[Uptime Kuma](https://github.com/louislam/uptime-kuma)**, but you should run this from a different machine.
 
-If you're running wordpress sites created via the `boost` command, wp-fail2ban events are logged to `~/server/wp-fail2ban.log`. This file is automatically monitored by the fail2ban container, and you can use it to review security related events. For example, use `grep "Accepted" ~/server/wp-fail2ban.log` to view succesful logins if you want to whitelist IPs. The timestamps in this file are unfortunately locked to GMT. If you know how to change the timezone for syslog in Alpine Linux, let me know.
+If you're running wordpress sites created via the `andybz` command, wp-fail2ban events are logged to `~/server/wp-fail2ban.log`. This file is automatically monitored by the fail2ban container, and you can use it to review security related events. For example, use `grep "Accepted" ~/server/wp-fail2ban.log` to view succesful logins if you want to whitelist IPs. The timestamps in this file are unfortunately locked to GMT. If you know how to change the timezone for syslog in Alpine Linux, let me know.
 
-## boost command
+## andybz command
 
-The command `boost` runs a helper script that allows you to do the following:
+The command `andybz` runs a helper script that allows you to do the following:
 
 - Start site
 - Stop site

@@ -33,13 +33,13 @@ echo -e "\n\e[32mSite created at /home/$CUR_USER/sites/$sitename/wordpress\e[0m\
 read -r -p "Create database now (y/n)? "
 if [[ $REPLY =~ ^[Yy]$ ]]
 then
-  BOOST_DB="${sitename//-/_}"
-  BOOST_DB_USER="u_${sitename//-/_}"
-  BOOST_DB_PASS=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-16}")
-  docker exec -e BOOST_DB="$BOOST_DB" -e BOOST_DB_USER="$BOOST_DB_USER" -e BOOST_DB_PASS="$BOOST_DB_PASS" mariadb /bin/bash -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE $BOOST_DB; CREATE USER '\''$BOOST_DB_USER'\''; SET PASSWORD FOR '\''$BOOST_DB_USER'\'' = PASSWORD('\''$BOOST_DB_PASS'\''); GRANT ALL PRIVILEGES ON $BOOST_DB.* TO '\''$BOOST_DB_USER'\''; FLUSH PRIVILEGES;"'
-  echo -e "\n\e[36mDatabase:\e[0m $BOOST_DB"
-  echo -e "\e[36mUser:\e[0m $BOOST_DB_USER"
-  echo -e "\e[36mPassword:\e[0m $BOOST_DB_PASS"
+  ANDYBZ_DB="${sitename//-/_}"
+  ANDYBZ_DB_USER="u_${sitename//-/_}"
+  ANDYBZ_DB_PASS=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-16}")
+  docker exec -e ANDYBZ_DB="$ANDYBZ_DB" -e ANDYBZ_DB_USER="$ANDYBZ_DB_USER" -e ANDYBZ_DB_PASS="$ANDYBZ_DB_PASS" mariadb /bin/bash -c 'mysql -uroot -p"$MYSQL_ROOT_PASSWORD" -e "CREATE DATABASE $ANDYBZ_DB; CREATE USER '\''$ANDYBZ_DB_USER'\''; SET PASSWORD FOR '\''$ANDYBZ_DB_USER'\'' = PASSWORD('\''$ANDYBZ_DB_PASS'\''); GRANT ALL PRIVILEGES ON $ANDYBZ_DB.* TO '\''$ANDYBZ_DB_USER'\''; FLUSH PRIVILEGES;"'
+  echo -e "\n\e[36mDatabase:\e[0m $ANDYBZ_DB"
+  echo -e "\e[36mUser:\e[0m $ANDYBZ_DB_USER"
+  echo -e "\e[36mPassword:\e[0m $ANDYBZ_DB_PASS"
   echo -e "\e[36mHost:\e[0m mariadb\n"
 fi
 
