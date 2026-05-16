@@ -15,7 +15,7 @@ function select_project() {
 
 PS3="Choose action: "
 
-select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Prune Docker Images" "MariaDB Upgrade" "Ban Country" "Unban Country" "Quit" "DB Search Replace"
+select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Blacklist IP" "Prune Docker Images" "MariaDB Upgrade" "Ban Country" "Unban Country" "Quit" "DB Search Replace"
 do
     case $action in
         "Start site")
@@ -82,6 +82,15 @@ do
           sudo sed -i "s|ignoreip =.*|& $whitelistip|" ~/server/fail2ban/data/jail.d/jail.local
           docker exec fail2ban sh -c "fail2ban-client reload"
           echo -e "\e[32m$whitelistip has been whitelisted. If it's currently banned, make sure you unban it as well 👍\e[0m"
+          break;;
+        "Blacklist IP")
+          read -r -p "Enter IP Address to ban: " banip
+          JAILS=$(docker exec fail2ban sh -c "fail2ban-client status | grep 'Jail list'" | sed -E 's/^[^:]+:[ \t]+//' | sed 's/,//g')
+          for JAIL in $JAILS
+          do
+            docker exec fail2ban sh -c "fail2ban-client set $JAIL banip $banip"
+          done
+          echo -e "\e[32m$banip has been banned in all jails 👍\e[0m"
           break;;
         "Prune Docker Images")
           docker image prune -a
