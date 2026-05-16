@@ -75,6 +75,8 @@ The command `andybz` runs a helper script that allows you to do the following:
 - View status of all Fail2ban jails
 - Unban IP in Fail2ban jail
 - Permanently whitelist IP in Fail2ban
+- Ban country (GeoIP2 - blocks by country code)
+- Unban country (GeoIP2 - removes country block)
 
 ## Working with Fail2ban
 
