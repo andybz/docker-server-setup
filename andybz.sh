@@ -15,7 +15,7 @@ function select_project() {
 
 PS3="Choose action: "
 
-select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Prune Docker Images" "MariaDB Upgrade" "Quit" "DB Search Replace"
+select action in "Start site" "Stop Site" "Create Site" "Delete Site & Files" "Restart Site" "Fix Permissions" "Add SSH Key" "Container Shell" "Fail2ban Status" "Unban IP" "Whitelist IP" "Prune Docker Images" "MariaDB Upgrade" "Ban Country" "Unban Country" "Quit" "DB Search Replace"
 do
     case $action in
         "Start site")
@@ -94,6 +94,38 @@ do
           read -r -p "Enter search string: " searchstring
           read -r -p "Enter replace string: " replacestring
           docker exec "$sitename" sh -c "cd /usr/src/wordpress && wp search-replace '$searchstring' '$replacestring' --all-tables"
+          break;;
+        "Ban Country")
+          GEOIP_CONF="/home/$CUR_USER/server/npm/data/nginx/custom/http_top.conf"
+          echo -e "\e[36mCurrently banned countries:\e[0m"
+          grep -E '^    [A-Z]{2} 1;' "$GEOIP_CONF" | awk '{print "  " $1}' 2>/dev/null || echo "  (none)"
+          read -r -p "Enter 2-letter country code to ban (e.g. CN, RU): " countrycode
+          countrycode=$(echo "$countrycode" | tr '[:lower:]' '[:upper:]')
+          if [[ ! "$countrycode" =~ ^[A-Z]{2}$ ]]; then
+            echo -e "\e[31mInvalid country code. Must be exactly 2 letters.\e[0m"
+          elif grep -q "^    $countrycode 1;" "$GEOIP_CONF" 2>/dev/null; then
+            echo -e "\e[33m$countrycode is already banned.\e[0m"
+          else
+            sudo sed -i "/^}$/i\    $countrycode 1;" "$GEOIP_CONF"
+            docker exec nginx-proxy-manager nginx -s reload
+            echo -e "\e[32m$countrycode has been banned and nginx reloaded 👍\e[0m"
+          fi
+          break;;
+        "Unban Country")
+          GEOIP_CONF="/home/$CUR_USER/server/npm/data/nginx/custom/http_top.conf"
+          echo -e "\e[36mCurrently banned countries:\e[0m"
+          grep -E '^    [A-Z]{2} 1;' "$GEOIP_CONF" | awk '{print "  " $1}' 2>/dev/null || echo "  (none)"
+          read -r -p "Enter 2-letter country code to unban: " countrycode
+          countrycode=$(echo "$countrycode" | tr '[:lower:]' '[:upper:]')
+          if [[ ! "$countrycode" =~ ^[A-Z]{2}$ ]]; then
+            echo -e "\e[31mInvalid country code. Must be exactly 2 letters.\e[0m"
+          elif ! grep -q "^    $countrycode 1;" "$GEOIP_CONF" 2>/dev/null; then
+            echo -e "\e[33m$countrycode is not currently banned.\e[0m"
+          else
+            sudo sed -i "/^    $countrycode 1;$/d" "$GEOIP_CONF"
+            docker exec nginx-proxy-manager nginx -s reload
+            echo -e "\e[32m$countrycode has been unbanned and nginx reloaded 👍\e[0m"
+          fi
           break;;
         "Quit")
           echo "Goodbye 👍"
