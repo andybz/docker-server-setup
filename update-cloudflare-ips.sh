@@ -1,121 +1,62 @@
 #!/usr/bin/env bash
 #
-# update-cloudflare-ips.sh
-# Fetches current Cloudflare IP ranges and updates:
-#   1. Nginx Proxy Manager real_ip config (http_top.conf)
-#   2. Fail2ban ignoreip whitelist (jail.local)
+# update-cloudflare-ips (installed in /usr/local/sbin, run weekly as root by
+# cloudflareIps.timer)
 #
-# Usage: sudo ./update-cloudflare-ips.sh
-# Recommended: run weekly via cron
-#   0 3 * * 0 /home/andy/server/update-cloudflare-ips.sh >> /var/log/cloudflare-ip-update.log 2>&1
+# Keeps Cloudflare's published IP ranges in fail2ban's whitelist so fail2ban can
+# never ban Cloudflare itself (which would take down every proxied site).
+# The list lives in its own generated file, jail.d/00-cloudflare.local, which
+# jail.local pulls in with %(cloudflare_ips)s - nothing else is touched.
+#
+# Real visitor IPs behind Cloudflare are restored by NPM itself: it keeps
+# Cloudflare's ranges in its built-in ip_ranges.conf, and server_proxy.conf sets
+# real_ip_header CF-Connecting-IP. So no nginx changes are needed here.
 
-NGINX_CONF="/home/andy/server/npm/data/nginx/custom/http_top.conf"
-JAIL_CONF="/home/andy/server/fail2ban/data/jail.d/jail.local"
+set -Eeuo pipefail
 
-# Fetch current Cloudflare IP ranges
-CF_IPV4=$(curl -sf https://www.cloudflare.com/ips-v4)
-CF_IPV6=$(curl -sf https://www.cloudflare.com/ips-v6)
+CONF=/etc/server-setup.conf
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+USERNAME="${USERNAME:?USERNAME is not set in $CONF}"
+OUT="/home/$USERNAME/server/fail2ban/data/jail.d/00-cloudflare.local"
 
-if [ -z "$CF_IPV4" ] || [ -z "$CF_IPV6" ]; then
-    echo "$(date): ERROR - Failed to fetch Cloudflare IP ranges. Aborting." >&2
+fetch() { curl -fsS --max-time 20 --retry 3 "$1"; }
+
+# Cloudflare's lists have no trailing newline, so join them explicitly
+ranges=$(printf '%s\n%s\n' "$(fetch https://www.cloudflare.com/ips-v4)" "$(fetch https://www.cloudflare.com/ips-v6)" |
+  tr -d '\r' | sed '/^[[:space:]]*$/d')
+
+# refuse to write anything that is not a list of CIDR ranges
+count=0
+while read -r cidr; do
+  if ! [[ $cidr =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ || $cidr =~ ^[0-9a-fA-F:]+/[0-9]{1,3}$ ]]; then
+    echo "$(date '+%F %T') ERROR: unexpected line from Cloudflare: '$cidr'. Nothing changed." >&2
     exit 1
+  fi
+  count=$((count + 1))
+done <<<"$ranges"
+
+if [ "$count" -lt 10 ]; then
+  echo "$(date '+%F %T') ERROR: only $count ranges received. Nothing changed." >&2
+  exit 1
 fi
 
-echo "$(date): Fetched $(echo "$CF_IPV4" | wc -l) IPv4 and $(echo "$CF_IPV6" | wc -l) IPv6 ranges."
+tmp=$(mktemp)
+trap 'rm -f "$tmp"' EXIT
+{
+  echo "# Managed by update-cloudflare-ips (weekly via cloudflareIps.timer). Do not edit:"
+  echo "# this file is rewritten from https://www.cloudflare.com/ips-v4 and /ips-v6."
+  echo "# Whitelisted so a broken real-IP setup can never get Cloudflare itself banned."
+  echo
+  echo "[DEFAULT]"
+  echo "cloudflare_ips = $(echo "$ranges" | paste -sd' ' -)"
+} >"$tmp"
 
-# -----------------------------------------------
-# 1. Rebuild nginx http_top.conf
-# -----------------------------------------------
-
-# Build set_real_ip_from directives
-NGINX_CF_BLOCK="# ---------------------------------------------------
-# Cloudflare real IP restoration
-# Tells nginx to trust these source IPs and use
-# CF-Connecting-IP header to get the real visitor IP.
-# Auto-maintained by ~/server/update-cloudflare-ips.sh
-# Last updated: $(date -u +%Y-%m-%dT%H:%M:%SZ)
-# ---------------------------------------------------
-
-# Cloudflare IPv4 ranges"
-
-while IFS= read -r ip; do
-    [ -n "$ip" ] && NGINX_CF_BLOCK="${NGINX_CF_BLOCK}
-set_real_ip_from ${ip};"
-done <<< "$CF_IPV4"
-
-NGINX_CF_BLOCK="${NGINX_CF_BLOCK}
-
-# Cloudflare IPv6 ranges"
-
-while IFS= read -r ip; do
-    [ -n "$ip" ] && NGINX_CF_BLOCK="${NGINX_CF_BLOCK}
-set_real_ip_from ${ip};"
-done <<< "$CF_IPV6"
-
-NGINX_CF_BLOCK="${NGINX_CF_BLOCK}
-
-real_ip_recursive on;"
-
-# Preserve everything from the GeoIP2 section onward
-GEOIP_BLOCK=$(sed -n '/^# -.*GeoIP2/,$ p' "$NGINX_CONF")
-
-if [ -z "$GEOIP_BLOCK" ]; then
-    echo "$(date): WARNING - Could not find GeoIP2 block in $NGINX_CONF. Writing CF block only."
-    echo "$NGINX_CF_BLOCK" > "$NGINX_CONF"
-else
-    printf '%s\n\n%s\n' "$NGINX_CF_BLOCK" "$GEOIP_BLOCK" > "$NGINX_CONF"
+if [ -f "$OUT" ] && cmp -s "$tmp" "$OUT"; then
+  echo "$(date '+%F %T') Cloudflare ranges unchanged ($count)."
+  exit 0
 fi
 
-echo "$(date): Updated $NGINX_CONF"
-
-# -----------------------------------------------
-# 2. Update Fail2ban ignoreip in jail.local
-# -----------------------------------------------
-
-# Build the Cloudflare portion of ignoreip (IPv4 only — Fail2ban iptables works on IPv4)
-CF_IGNORE=$(echo "$CF_IPV4" | tr '\n' ' ' | sed 's/ *$//')
-
-# Read existing ignoreip line, strip old Cloudflare ranges (anything after the user's custom IPs)
-# We detect the boundary by finding the last IP before the first Cloudflare range (103.x, 104.x, etc.)
-# Strategy: preserve everything up to and including the original user IPs, then append new CF ranges.
-
-# Extract the user's original (non-Cloudflare) IPs from the current ignoreip
-CURRENT_IGNORE=$(grep -A5 '^ignoreip' "$JAIL_CONF" | tr -d '\n' | sed 's/ignoreip *= *//' | tr -s ' ')
-USER_IPS=""
-for ip in $CURRENT_IGNORE; do
-    # Keep IPs that are NOT in Cloudflare's range list
-    if ! echo "$CF_IPV4" | grep -qF "$ip"; then
-        USER_IPS="$USER_IPS $ip"
-    fi
-done
-USER_IPS=$(echo "$USER_IPS" | sed 's/^ //')
-
-# Build new ignoreip value
-NEW_IGNORE="ignoreip = ${USER_IPS} ${CF_IGNORE}"
-
-# Replace the ignoreip block in jail.local (may span multiple lines with continuation)
-# First, collapse the multi-line ignoreip into one marker, then replace
-TMPFILE=$(mktemp)
-awk '
-    /^ignoreip/ { printing=1; next }
-    printing && /^[[:space:]]/ { next }
-    printing { printing=0 }
-    !printing { print }
-' "$JAIL_CONF" > "$TMPFILE"
-
-# Insert the new ignoreip line after the comment
-sed -i "/^# Auto-maintained by/a\\
-${NEW_IGNORE}" "$TMPFILE" 2>/dev/null
-
-# If the marker comment wasn't found, insert before [npm-docker]
-if ! grep -q '^ignoreip' "$TMPFILE"; then
-    sed -i "/^\[npm-docker\]/i\\
-${NEW_IGNORE}\n" "$TMPFILE"
-fi
-
-cp "$TMPFILE" "$JAIL_CONF"
-rm -f "$TMPFILE"
-
-echo "$(date): Updated $JAIL_CONF"
-
-echo "$(date): Done. Restart NPM and Fail2ban containers to apply changes."
+install -m 644 "$tmp" "$OUT"
+docker exec fail2ban fail2ban-client reload >/dev/null
+echo "$(date '+%F %T') Updated $count Cloudflare ranges and reloaded fail2ban."

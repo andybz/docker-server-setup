@@ -1,7 +1,8 @@
 [Unit]
-Description="Reload npm-docker Fail2ban jail to add logs for new sites"
+Description=Reload the npm-docker fail2ban jail to pick up logs of new sites
 Requires=docker.service
 After=docker.service
 
 [Service]
-ExecStart=docker exec fail2ban sh -c "fail2ban-client reload npm-docker"
+Type=oneshot
+ExecStart=/usr/bin/docker exec fail2ban fail2ban-client reload npm-docker

@@ -1,6 +1,13 @@
+# ~/sites/CHANGE_TO_SITE_NAME/docker-compose.yml (created by newsite.sh)
+
 networks:
-  CHANGE_TO_USERNAME:
+  # shared network: Nginx Proxy Manager reaches the site and the site reaches MariaDB
+  proxy:
+    name: CHANGE_TO_USERNAME
     external: true
+  # private network for this site and its Redis only, so other sites can't
+  # read or poison this site's object cache
+  internal: {}
 
 services:
   CHANGE_TO_SITE_NAME-redis:
@@ -9,28 +16,35 @@ services:
     restart: unless-stopped
     command: redis-server /usr/local/etc/redis/redis.conf
     volumes:
-      - ./redis.conf:/usr/local/etc/redis/redis.conf
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
     networks:
-      - CHANGE_TO_USERNAME
+      - internal
+    mem_limit: 128m
+    labels:
+      com.centurylinklabs.watchtower.enable: 'true'
 
   CHANGE_TO_SITE_NAME:
     container_name: CHANGE_TO_SITE_NAME
     image: ghcr.io/andybz/docker-wordpress-8:latest
+    restart: unless-stopped
     volumes:
       - ./wordpress:/usr/src/wordpress
-      - ./.htninja:/usr/src/.htninja
-      # - /home/CHANGE_TO_USERNAME/server/wp-fail2ban.log:/var/log/messages
-    restart: unless-stopped
+      - ./.htninja:/usr/src/.htninja:ro
+      # wp-fail2ban events feed the wordpress-soft/-hard fail2ban jails
+      - /home/CHANGE_TO_USERNAME/server/wp-fail2ban.log:/var/log/messages
     networks:
-      - CHANGE_TO_USERNAME
+      - proxy
+      - internal
     depends_on:
       - CHANGE_TO_SITE_NAME-redis
+    # raise for heavy sites; keeps one runaway site from starving the others
+    mem_limit: 768m
+    labels:
+      com.centurylinklabs.watchtower.enable: 'true'
     environment:
-      # TZ: 'CHANGE_TO_TZ'
       REDIS_HOST: CHANGE_TO_SITE_NAME-redis
-      # installs recommended plugins (see readme)
-      ADDITIONAL_PLUGINS:
-        'w3-total-cache post-smtp wp-fail2ban wp-fail2ban-addon-gravity-forms ninjafirewall'
-        # cron jobs to run from within container (separate lines with \n)
-      #CRON: "* * * * * touch hello-world \n
-      #  0 * * * * curl http://127.0.0.1/webhook &>/dev/null"
+      # installs recommended plugins (see the docker-wordpress-8 readme)
+      ADDITIONAL_PLUGINS: 'w3-total-cache wp-fail2ban wp-fail2ban-addon-gravity-forms ninjafirewall'
+      # cron jobs to run inside the container (one per line)
+      # CRON: |
+      #   0 * * * * curl -s http://127.0.0.1/webhook >/dev/null

@@ -1,249 +1,346 @@
-#! /bin/bash
+#!/usr/bin/env bash
+#
+# AndyBZ server setup for a fresh Ubuntu / Debian server. Run as root:
+#
+#   curl -fsSL https://raw.githubusercontent.com/andybz/docker-server-setup/main/setup.sh -o setup.sh
+#   sudo bash setup.sh
+#
+# Every question can be answered ahead of time with an environment variable:
+#   USERNAME=andy SSH_PORT=57822 TIMEZONE=America/New_York sudo -E bash setup.sh
+# Optional: SSH_PUBKEY (if root has no authorized_keys), USER_PASSWORD (sudo
+# password; prompted if unset), REPO_REF (branch or tag to install, default main),
+# REBOOT=yes|no.
 
-# exit on error
-set -e
+set -Eeuo pipefail
 
-# clear screen
-clear
-
-# variables
 GREEN="\e[32m"
 CYAN="\e[36m"
 YELLOW="\e[33m"
+RED="\e[31m"
 ENDCOLOR="\e[0m"
-REPO="andybz/docker-server-setup"
-CUR_TIMEZONE=$(timedatectl show | grep zone | sed 's/Timezone=//g');
-MARIA_DB_ROOT_PASSWORD=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-20}" | sed 's/-/_/g')
-NPM_DB_PASSWORD=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-20}" | sed 's/-/_/g')
-KOPIA_PASSWORD=$(< /dev/urandom tr -dc A-Z-a-z-0-9 | head -c"${1:-10}")
+REPO_URL="${REPO_URL:-https://github.com/andybz/docker-server-setup.git}"
+REPO_REF="${REPO_REF:-main}"
 
-# intro message
-echo -e "${GREEN}Welcome! This script should be run as the root user on a new Debian or Ubuntu server.${ENDCOLOR}\n"
+step() { echo -e "\n${CYAN}==> $*${ENDCOLOR}"; }
+die() { echo -e "${RED}$*${ENDCOLOR}" >&2; exit 1; }
+trap 'echo -e "${RED}Setup failed at line $LINENO. Fix the problem and re-run; finished steps are skipped.${ENDCOLOR}"' ERR
 
-# change timezone (works on debian / ubuntu / fedora)
-read -r -p "$(echo -e "The system time zone is ${YELLOW}$CUR_TIMEZONE${ENDCOLOR}. Do you want to change it (y/n)?${ENDCOLOR} ")" yn
-if [[ $yn =~ ^[Yy]$ ]]; then
-  if command -v dpkg-reconfigure &> /dev/null; then
-    dpkg-reconfigure tzdata;
+[ "$(id -u)" -eq 0 ] || die "Run this script as root (sudo bash setup.sh)."
+# shellcheck source=/dev/null
+. /etc/os-release
+case "$ID" in ubuntu | debian) ;; *) die "Only Ubuntu and Debian are supported." ;; esac
+
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a
+
+echo -e "${GREEN}AndyBZ server setup${ENDCOLOR}"
+
+# ---------------------------------------------------------------------------
+# Questions
+# ---------------------------------------------------------------------------
+CUR_TIMEZONE=$(timedatectl show -p Timezone --value)
+if [ -z "${TIMEZONE:-}" ]; then
+  read -r -p "Time zone [$CUR_TIMEZONE]: " TIMEZONE
+  TIMEZONE=${TIMEZONE:-$CUR_TIMEZONE}
+fi
+# (no grep -q: it exits early, and with pipefail the pipeline would then fail)
+timedatectl list-timezones | grep -x "$TIMEZONE" >/dev/null || die "Unknown time zone: $TIMEZONE"
+
+while [[ ! ${USERNAME:-} =~ ^[a-z][-a-z0-9]{0,30}$ ]]; do
+  read -r -p "Username to create (lowercase letters, digits, dashes): " USERNAME
+done
+
+while ! [[ ${SSH_PORT:-} =~ ^[0-9]+$ ]] || ((SSH_PORT < 1024 || SSH_PORT > 65000)) || ((SSH_PORT >= 6900 && SSH_PORT <= 6905)); do
+  read -r -p "SSH port (1024-65000, not 6900-6905): " SSH_PORT
+done
+
+if [ ! -s /root/.ssh/authorized_keys ] && [ -z "${SSH_PUBKEY:-}" ]; then
+  read -r -p "Paste your public SSH key: " SSH_PUBKEY
+fi
+
+# ---------------------------------------------------------------------------
+# System
+# ---------------------------------------------------------------------------
+step "Time zone: $TIMEZONE"
+timedatectl set-timezone "$TIMEZONE"
+
+step "Updating packages"
+apt-get update -qq
+apt-get -y -qq -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold full-upgrade
+# iptables-persistent replaces ufw; don't let it snapshot rules on install
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean false" | debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean false" | debconf-set-selections
+apt-get -y -qq install ca-certificates curl gnupg git openssl python3 \
+  unattended-upgrades apt-listchanges fail2ban iptables-persistent restic >/dev/null
+
+step "Automatic security updates"
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+APT::Periodic::AutocleanInterval "7";
+EOF
+cat >/etc/apt/apt.conf.d/52unattended-upgrades-local <<'EOF'
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+Unattended-Upgrade::Remove-Unused-Dependencies "true";
+// set to "true" (and pick a time) to reboot automatically for kernel updates
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+EOF
+systemctl enable -q --now unattended-upgrades
+
+step "Kernel network hardening"
+cat >/etc/sysctl.d/90-hardening.conf <<'EOF'
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv6.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv4.conf.all.log_martians = 1
+net.ipv4.icmp_echo_ignore_broadcasts = 1
+kernel.kptr_restrict = 2
+kernel.dmesg_restrict = 1
+vm.swappiness = 10
+EOF
+sysctl -q --system
+
+mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+if [ -z "$(swapon --show --noheadings)" ] && [ "$mem_mb" -lt 4096 ]; then
+  step "Adding a 2 GB swap file (${mem_mb} MB RAM)"
+  fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap -q /swapfile && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >>/etc/fstab
+fi
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+step "User: $USERNAME"
+HOME_DIR="/home/$USERNAME"
+if ! id "$USERNAME" >/dev/null 2>&1; then
+  useradd -m -s /bin/bash "$USERNAME"
+  if [ -n "${USER_PASSWORD:-}" ]; then
+    echo "$USERNAME:$USER_PASSWORD" | chpasswd
   else
-    read -r -p "Enter time zone: " new_timezone;
-    if timedatectl set-timezone "$new_timezone"; then
-      echo -e "${GREEN}Time zone has changed to: $new_timezone ${ENDCOLOR}"
-    else
-      echo -e "Run ${CYAN}timedatectl list-timezones${ENDCOLOR} to view all time zones";
-      exit;
-    fi
+    echo "Set a password for $USERNAME (used for sudo):"
+    passwd "$USERNAME"
   fi
 fi
+usermod -aG sudo "$USERNAME" 2>/dev/null || usermod -aG wheel "$USERNAME"
 
-# create user account (works on debian / ubuntu / fedora)
-read -r -p "$(echo -e "\nEnter username for the user to be created: ")" username
-while [[ ! $username =~ ^[a-z][-a-z0-9]*$ ]]; do
-  read -r -p "Invalid format. Enter username for the user to be created: " username
-done
-useradd -m -s /bin/bash "$username"
-passwd "$username"
-usermod -aG sudo "$username" || usermod -aG wheel "$username"
-
-echo ""
-
-# SSH port prompt
-read -r -p "Which port do you want to use for SSH (not 6900-6905 please)? " ssh_port
-while (( ssh_port < 1000 || ssh_port > 65000)); do
-  read -r -p "Please use a number between 1000 and 65000: " ssh_port
-done
-
-# add ssh key
-mkdir -p /home/"$username"/.ssh
-# check if root has authorized_keys already
-if [ -s /root/.ssh/authorized_keys ]
-then
-  cp /root/.ssh/authorized_keys /home/"$username"/.ssh/authorized_keys
-else
-  # if no keys, ask for key instead
-  read -r -p "Please paste your public SSH key: " sshkey
-  echo "$sshkey" >> /home/"$username"/.ssh/authorized_keys
+install -d -m 700 -o "$USERNAME" -g "$USERNAME" "$HOME_DIR/.ssh"
+if [ -n "${SSH_PUBKEY:-}" ]; then
+  echo "$SSH_PUBKEY" >>"$HOME_DIR/.ssh/authorized_keys"
+elif [ ! -s "$HOME_DIR/.ssh/authorized_keys" ]; then
+  cp /root/.ssh/authorized_keys "$HOME_DIR/.ssh/authorized_keys"
 fi
-# fix permissions
-chown -R "$username": /home/"$username"/.ssh
+chown "$USERNAME:" "$HOME_DIR/.ssh/authorized_keys"
+chmod 600 "$HOME_DIR/.ssh/authorized_keys"
 
-# add / update packages
-echo -e "${CYAN}Updating system & packages...${ENDCOLOR}"
+cat >/etc/server-setup.conf <<EOF
+# Read by the root scripts in /usr/local/sbin (backups, Cloudflare updater, firewall)
+USERNAME=$USERNAME
+SSH_PORT=$SSH_PORT
+LOCAL_KEEP_DAYS=7
+EOF
+chmod 644 /etc/server-setup.conf
 
-# kopia
-curl -s https://kopia.io/signing-key | gpg --dearmor -o /usr/share/keyrings/kopia-keyring.gpg
-echo "deb [signed-by=/usr/share/keyrings/kopia-keyring.gpg] http://packages.kopia.io/apt/ stable main" | tee /etc/apt/sources.list.d/kopia.list
-
-# install docker
-curl -fsSL https://get.docker.com -o /tmp/get-docker.sh
-sh /tmp/get-docker.sh
-
-# update system - apt update runs in docker script
-apt upgrade -y
-apt install git kopia apache2-utils unattended-upgrades -y
-
-# unattended-upgrades
-echo -e "${CYAN}Setting up unattended-upgrades...${ENDCOLOR}"
-dpkg-reconfigure --priority=low unattended-upgrades
-
-# docker stuff
-echo -e "${CYAN}Setting up docker containers...${ENDCOLOR}"
-
-# clone repo and copy files
-rm -r /tmp/docker-server ||:
-git clone --depth=1 "https://github.com/$REPO.git" /tmp/docker-server
-mkdir -p /home/"$username"/server/fail2ban /home/"$username"/server/backups /home/"$username"/sites
-cp -r /tmp/docker-server/fail2ban /home/"$username"/server/fail2ban/data
-cp /tmp/docker-server/docker-compose.yml /home/"$username"/server/docker-compose.yml
-cp /tmp/docker-server/firewall.sh /home/"$username"/firewall.sh
-sed -i "s/REPLACE_ME/$ssh_port/" "/home/$username/firewall.sh"
-
-# create docker networks
-docker network create "$username"
-docker network create database
-
-# make file for wp-fail2ban logs
-touch "/home/$username/server/wp-fail2ban.log"
-# rotate wp-fail2ban logs using logrotate
-cp /tmp/docker-server/wordpress/wp-fail2ban.conf /etc/logrotate.d/wp-fail2ban.conf
-sed -i "s/USERNAME/$username/" /etc/logrotate.d/wp-fail2ban.conf
-
-# replace docker compose file with user input, and start
-sed -i "s/CHANGE_TO_USERNAME/$username/" "/home/$username/server/docker-compose.yml"
-sed -i "s/MARIA_DB_ROOT_PASSWORD/$MARIA_DB_ROOT_PASSWORD/" "/home/$username/server/docker-compose.yml"
-sed -i "s/NPM_DB_PASSWORD/$NPM_DB_PASSWORD/" "/home/$username/server/docker-compose.yml"
-sed -i "s/USER_UID/$(id -u $username)/" "/home/$username/server/docker-compose.yml"
-sed -i "s/USER_GID/$(id -g $username)/" "/home/$username/server/docker-compose.yml"
-sed -i "s|USER_TIMEZONE|$(timedatectl show | grep zone | sed 's/Timezone=//g')|" "/home/$username/server/docker-compose.yml"
-docker compose -f /home/"$username"/server/docker-compose.yml up -d
-
-# dummy logs so fail2ban doesn't shut down
-mkdir -p /home/"$username"/server/npm/data/logs
-touch /home/"$username"/server/npm/data/logs/proxy-host-{1..5}_access.log
-
-# add custom http nginx config
-# mkdir -p /home/"$username"/server/npm/data/nginx/custom
-# cp /tmp/docker-server/nginx/http.conf /home/"$username"/server/npm/data/nginx/custom/http.conf
-
-# fix permissions
-chown "$username": /home/"$username"/sites /home/"$username"/server/docker-compose.yml /home/"$username"/firewall.sh
-# nobody user bc that's what wp container uses
-mkdir -p /home/"$username"/server/filebrowser
-chown -R nobody:nogroup /home/"$username"/server/filebrowser
-
-# add user to docker users
-usermod -aG docker "$username"
-
-# generate password file for kopia server
-htpasswd -bc /root/kopiap.txt kopia "$KOPIA_PASSWORD" > /dev/null 2>&1
-
-# set up automated jobs with systemd
-cp /tmp/docker-server/systemd/* /etc/systemd/system
-sed -i "s/USERNAME/$username/" /etc/systemd/system/kopiaServer.service
-
-cp /tmp/docker-server/export_mariadb.sh /root/.export_mariadb.sh
-chmod +x /root/.export_mariadb.sh
-sed -i "s/USERNAME/$username/" /root/.export_mariadb.sh
-
-systemctl daemon-reload
-# systemd timer to reload fail2ban jail every six hours
-systemctl start reloadFail2ban.timer
-systemctl enable reloadFail2ban.timer > /dev/null 2>&1
-# systemd timer to backup mariadb every day at 2am
-systemctl start mariadbBackup.timer
-systemctl enable mariadbBackup.timer > /dev/null 2>&1
-# kopia server
-systemctl start kopiaServer.service
-systemctl enable kopiaServer.service > /dev/null 2>&1
-
-# update SSH config
-echo -e "\n${CYAN}Updating SSH config...${ENDCOLOR}"
-SSHD_CONFIG=/etc/ssh/sshd_config
-cp "$SSHD_CONFIG" "${SSHD_CONFIG}.bak.$(date +%s)"
-
-if grep -qE '^\s*#?\s*Port\s+' "$SSHD_CONFIG"; then
-  sed -i "s/^\s*#\?\s*Port\s\+.*/Port $ssh_port/" "$SSHD_CONFIG"
+# ---------------------------------------------------------------------------
+# Tools (this repo), kept on the server so nothing is downloaded and run blindly
+# ---------------------------------------------------------------------------
+step "Installing tools ($REPO_REF) into $HOME_DIR/server/tools"
+TOOLS="$HOME_DIR/server/tools"
+mkdir -p "$HOME_DIR/server" "$HOME_DIR/sites" "$HOME_DIR/server/backups"
+if [ -d "$TOOLS/.git" ]; then
+  git -C "$TOOLS" fetch -q --depth 1 origin "$REPO_REF" && git -C "$TOOLS" checkout -q FETCH_HEAD
 else
-  echo "Port $ssh_port" >> "$SSHD_CONFIG"
+  git clone -q --depth 1 --branch "$REPO_REF" "$REPO_URL" "$TOOLS"
 fi
+chown -R "$USERNAME:" "$TOOLS" "$HOME_DIR/sites"
 
-if grep -qE '^\s*#?\s*PermitRootLogin\s+' "$SSHD_CONFIG"; then
-  sed -i 's/^\s*#\?\s*PermitRootLogin\s\+.*/PermitRootLogin prohibit-password/' "$SSHD_CONFIG"
-else
-  echo "PermitRootLogin prohibit-password" >> "$SSHD_CONFIG"
-fi
+# ---------------------------------------------------------------------------
+# Firewall (before Docker starts publishing ports)
+# ---------------------------------------------------------------------------
+step "Firewall"
+bash "$TOOLS/firewall.sh" apply "$SSH_PORT"
 
-if grep -qE '^\s*#?\s*PubkeyAuthentication\s+' "$SSHD_CONFIG"; then
-  sed -i 's/^\s*#\?\s*PubkeyAuthentication\s\+.*/PubkeyAuthentication yes/' "$SSHD_CONFIG"
-else
-  echo "PubkeyAuthentication yes" >> "$SSHD_CONFIG"
-fi
-
-if grep -qE '^\s*#?\s*PasswordAuthentication\s+' "$SSHD_CONFIG"; then
-  sed -i 's/^\s*#\?\s*PasswordAuthentication\s\+.*/PasswordAuthentication no/' "$SSHD_CONFIG"
-else
-  echo "PasswordAuthentication no" >> "$SSHD_CONFIG"
-fi
-
-if grep -qE '^\s*#?\s*X11Forwarding\s+' "$SSHD_CONFIG"; then
-  sed -i 's/^\s*#\?\s*X11Forwarding\s\+.*/X11Forwarding no/' "$SSHD_CONFIG"
-else
-  echo "X11Forwarding no" >> "$SSHD_CONFIG"
-fi
-
-echo -e "${CYAN}Validating and reloading SSH daemon...${ENDCOLOR}\n"
+# ---------------------------------------------------------------------------
+# SSH
+# ---------------------------------------------------------------------------
+step "SSH: port $SSH_PORT, keys only, no root login"
+# port 22 stays open until the first login on the new port proves it works
+# (firewall.sh first-login then closes it)
+port_lines="Port $SSH_PORT"
+[ "$SSH_PORT" != 22 ] && port_lines="$port_lines
+Port 22"
+cat >/etc/ssh/sshd_config.d/00-hardening.conf <<EOF
+# Written by setup.sh. The 00- prefix makes these win over later drop-ins
+# (such as cloud-init's), which sshd would otherwise read first.
+$port_lines
+PermitRootLogin no
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PubkeyAuthentication yes
+AuthenticationMethods publickey
+AllowUsers $USERNAME
+MaxAuthTries 3
+LoginGraceTime 30
+X11Forwarding no
+AllowAgentForwarding no
+PermitUserEnvironment no
+EOF
 sshd -t
-systemctl reload ssh || systemctl restart ssh
+systemctl daemon-reload
+if systemctl is-active --quiet ssh.socket; then systemctl restart ssh.socket; else systemctl restart ssh; fi
 
-# verify ssh key is correct
-cat /home/"$username"/.ssh/authorized_keys
-read -r -p "$(echo -e "\nIs the above SSH key(s) correct (y/n)? ")" ssh_correct
-while [[ ! $ssh_correct =~ ^[Yy]$ ]]; do
-  read -r -p "Please paste your public SSH key: " sshkey
-  echo "$sshkey" >> /home/"$username"/.ssh/authorized_keys
-  cat /home/"$username"/.ssh/authorized_keys
-  read -r -p "$(echo -e "\nIs the above SSH key(s) correct (y/n)? ")" ssh_correct
-done
+# fail2ban on the host for SSH (the fail2ban container covers the websites)
+cat >/etc/fail2ban/jail.d/sshd.local <<EOF
+[DEFAULT]
+backend = systemd
+banaction = iptables-multiport
+bantime = 1h
+findtime = 10m
+maxretry = 5
 
-# aliases / .bashrc stuff
+[sshd]
+enabled = true
+port = $SSH_PORT,22
+
+[recidive]
+enabled = true
+logpath = /var/log/fail2ban.log
+backend = auto
+bantime = 1w
+findtime = 1d
+EOF
+systemctl enable -q fail2ban
+systemctl restart fail2ban
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+if ! command -v docker >/dev/null; then
+  step "Installing Docker (official repository)"
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/$ID/gpg" -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/$ID $VERSION_CODENAME stable" \
+    >/etc/apt/sources.list.d/docker.list
+  mkdir -p /etc/docker
+  # cap container logs so they can't fill the disk
+  cat >/etc/docker/daemon.json <<'EOF'
 {
-  echo 'alias dcu="docker compose up -d"';
-  echo 'alias dcd="docker compose down"';
-  echo 'alias dcu="docker compose up -d"';
-  echo 'alias dcr="docker compose restart"';
-  echo 'alias andybz="curl -s https://raw.githubusercontent.com/andybz/docker-server-setup/main/andybz.sh > ~/.andybz.sh && chmod +x ~/.andybz.sh && ~/.andybz.sh"';
-  echo 'alias ctop="docker run --rm -ti --volume /var/run/docker.sock:/var/run/docker.sock:ro quay.io/vektorlab/ctop:latest"';
-  echo 'echo -e "\nPortainer: \e[34mhttp://localhost:6900\n\e[0mNginx Proxy Manager: \e[34mhttp://localhost:6901\n\e[0mphpMyAdmin: \e[34mhttp://localhost:6902\n\e[0mFile Browser: \e[34mhttp://localhost:6903\n\e[0mKopia: \e[34mhttp://localhost:6904\e[0m (kopia:'"$KOPIA_PASSWORD"')\nDozzle: \e[34mhttp://localhost:6905\n\n\e[0mRun ctop to manage containers and view metrics.\n"';
-  echo 'type ~/firewall.sh &>/dev/null && ./firewall.sh';
-} >> "/home/$username/.bashrc"
-
-# Success Message
-echo -e "\n${GREEN}Setup complete 👍. Please log back in as $username on port $ssh_port.${ENDCOLOR}"
-echo -e "${GREEN}Firewall script will run on first login.${ENDCOLOR}"
-echo -e "${GREEN}Update your SSH config file with the info below${ENDCOLOR}"
-
-echo -e "\n\033[1m🚨\e[31m ENABLE HETZNER FIREWALL NOW 🚨${ENDCOLOR}\n"
-
-echo "Host $(hostname)"
-echo "    HostName $(curl -s ifconfig.me)"
-echo "    Port $ssh_port"
-echo "    User $username"
-echo "    LocalForward 6900 127.0.0.1:6900"
-echo "    LocalForward 6901 127.0.0.1:6901"
-echo "    LocalForward 6902 127.0.0.1:6902"
-echo "    LocalForward 6903 127.0.0.1:6903"
-echo "    LocalForward 6904 127.0.0.1:6904"
-echo "    LocalForward 6905 127.0.0.1:6905"
-echo "    ServerAliveInterval 60"
-echo -e "    ServerAliveCountMax 10\n"
-
-# clean up script
-rm ./setup.sh
-
-# change timezone (works on debian / ubuntu / fedora)
-read -r -p "$(echo -e "${YELLOW}Do you want to reboot now (y/n)?${ENDCOLOR} ")" yn
-if [[ $yn =~ ^[Yy]$ ]]
-then
-  reboot;
+  "log-driver": "local",
+  "log-opts": { "max-size": "20m", "max-file": "5" }
+}
+EOF
+  apt-get update -qq
+  apt-get -y -qq install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
 fi
+systemctl enable -q --now docker
+usermod -aG docker "$USERNAME"
 
+# ---------------------------------------------------------------------------
+# Server stack
+# ---------------------------------------------------------------------------
+step "Server containers"
+SERVER="$HOME_DIR/server"
+cp -n "$TOOLS/docker-compose.yml" "$SERVER/docker-compose.yml"
+if [ ! -f "$SERVER/.env" ]; then
+  gen() { openssl rand -base64 48 | tr -dc 'A-Za-z0-9' | cut -c1-24; }
+  (
+    umask 077
+    cat >"$SERVER/.env" <<EOF
+USERNAME=$USERNAME
+TZ=$TIMEZONE
+MARIADB_ROOT_PASSWORD=$(gen)
+NPM_DB_PASSWORD=$(gen)
+EOF
+  )
+fi
+chown "$USERNAME:" "$SERVER/.env" "$SERVER/docker-compose.yml"
+chmod 600 "$SERVER/.env"
+
+mkdir -p "$SERVER/fail2ban/data" "$SERVER/npm/data/logs" "$SERVER/npm/data/nginx/custom/f2b" "$SERVER/filebrowser/config"
+cp -rn "$TOOLS/fail2ban/." "$SERVER/fail2ban/data/"
+cp -n "$TOOLS/npm/custom/server_proxy.conf" "$SERVER/npm/data/nginx/custom/server_proxy.conf"
+# empty logs and deny lists so fail2ban and the NPM reload watcher start cleanly
+touch "$SERVER/npm/data/logs/proxy-host-"{1..5}"_access.log" "$SERVER/wp-fail2ban.log" \
+  "$SERVER/npm/data/nginx/custom/f2b/"{npm-docker,wordpress-hard,wordpress-soft}.conf
+chown "$USERNAME:" "$SERVER/wp-fail2ban.log"
+chown -R 65534:65534 "$SERVER/filebrowser"
+sed "s/USERNAME/$USERNAME/" "$TOOLS/wordpress/wp-fail2ban.conf" >/etc/logrotate.d/wp-fail2ban.conf
+
+docker network inspect "$USERNAME" >/dev/null 2>&1 || docker network create "$USERNAME" >/dev/null
+docker network inspect database >/dev/null 2>&1 || docker network create database >/dev/null
+docker compose -f "$SERVER/docker-compose.yml" up -d --quiet-pull
+
+# ---------------------------------------------------------------------------
+# Backups and maintenance timers
+# ---------------------------------------------------------------------------
+step "Backup and maintenance timers"
+install -m 755 "$TOOLS/backup/server-backup.sh" /usr/local/sbin/server-backup
+install -m 755 "$TOOLS/backup/setup-backups.sh" /usr/local/sbin/setup-backups
+install -m 755 "$TOOLS/update-cloudflare-ips.sh" /usr/local/sbin/update-cloudflare-ips
+for unit in serverBackup.service serverBackup.timer cloudflareIps.service cloudflareIps.timer \
+  reloadFail2ban.service reloadFail2ban.timer npmReload.service npmReload.path; do
+  sed "s/USERNAME/$USERNAME/g" "$TOOLS/systemd/$unit" >"/etc/systemd/system/$unit"
+done
+systemctl daemon-reload
+systemctl enable -q --now serverBackup.timer cloudflareIps.timer reloadFail2ban.timer npmReload.path
+
+# ---------------------------------------------------------------------------
+# Shell
+# ---------------------------------------------------------------------------
+BASHRC="$HOME_DIR/.bashrc"
+if ! grep -q '# docker-server-setup' "$BASHRC"; then
+  cat >>"$BASHRC" <<'EOF'
+
+# docker-server-setup
+alias dcu="docker compose up -d"
+alias dcd="docker compose down"
+alias dcr="docker compose restart"
+alias andybz="$HOME/server/tools/andybz.sh"
+alias ctop="docker run --rm -ti --volume /var/run/docker.sock:/var/run/docker.sock:ro quay.io/vektorlab/ctop:latest"
+echo -e "\nPortainer: \e[34mhttp://localhost:6900\n\e[0mNginx Proxy Manager: \e[34mhttp://localhost:6901\n\e[0mphpMyAdmin: \e[34mhttp://localhost:6902\n\e[0mFile Browser: \e[34mhttp://localhost:6903\n\e[0mDozzle: \e[34mhttp://localhost:6905\e[0m\n"
+"$HOME/server/tools/firewall.sh" first-login
+EOF
+fi
+[ "$SSH_PORT" != 22 ] && touch "$HOME_DIR/.setup-pending" && chown "$USERNAME:" "$HOME_DIR/.setup-pending"
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+trap - ERR
+PUBLIC_IP=$(curl -4 -fsS --max-time 5 https://ifconfig.me || hostname -I | awk '{print $1}')
+echo -e "\n${GREEN}Setup complete 👍${ENDCOLOR}"
+echo -e "\nAdd this to ~/.ssh/config on your computer, then log in with: ssh $(hostname -s)\n"
+cat <<EOF
+Host $(hostname -s)
+    HostName $PUBLIC_IP
+    Port $SSH_PORT
+    User $USERNAME
+    LocalForward 6900 127.0.0.1:6900
+    LocalForward 6901 127.0.0.1:6901
+    LocalForward 6902 127.0.0.1:6902
+    LocalForward 6903 127.0.0.1:6903
+    LocalForward 6905 127.0.0.1:6905
+    ServerAliveInterval 60
+    ServerAliveCountMax 10
+EOF
+echo -e "\n${YELLOW}Next steps:${ENDCOLOR}"
+echo "  1. Log in as $USERNAME on port $SSH_PORT. Port 22 closes automatically on that first login."
+echo "  2. Set up off-site backups: sudo setup-backups   (until then the nightly backup reports a failure)"
+echo "  3. Optional: allow only ports 80, 443 and $SSH_PORT in your cloud provider's firewall too."
+echo "  4. File Browser's first admin password: docker logs filebrowser 2>&1 | grep password"
+echo "  5. Your MariaDB root password is in ~/server/.env"
+
+if [ -f /var/run/reboot-required ]; then
+  if [ -z "${REBOOT:-}" ]; then
+    read -r -p "A reboot is needed to finish installing updates. Reboot now (y/n)? " yn
+    [[ $yn =~ ^[Yy]$ ]] && REBOOT=yes
+  fi
+  [ "${REBOOT:-}" = yes ] && reboot
+fi

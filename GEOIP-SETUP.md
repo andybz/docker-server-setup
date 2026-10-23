@@ -71,8 +71,11 @@ CONF
 
 ### 3c. Enforce blocking on all proxy hosts (`server_proxy.conf`)
 
+Append to the existing file (`tee -a`): it already holds the Cloudflare real-IP
+setting and the fail2ban deny lists, which must stay.
+
 ```bash
-sudo tee ~/server/npm/data/nginx/custom/server_proxy.conf > /dev/null << 'CONF'
+sudo tee -a ~/server/npm/data/nginx/custom/server_proxy.conf > /dev/null << 'CONF'
 # Block requests from banned countries
 if ($blocked_country) {
     return 403;

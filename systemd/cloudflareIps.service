@@ -1,0 +1,9 @@
+[Unit]
+Description=Refresh Cloudflare IP ranges in the fail2ban whitelist
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/update-cloudflare-ips

@@ -1,5 +1,5 @@
 [Unit]
-Description="Reload npm-docker Fail2ban jail timer"
+Description=Reload npm-docker Fail2ban jail timer
 
 [Timer]
 OnBootSec=6h

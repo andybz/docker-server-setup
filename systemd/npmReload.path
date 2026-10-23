@@ -1,0 +1,11 @@
+[Unit]
+Description=Watch fail2ban's nginx deny lists
+
+[Path]
+PathModified=/home/USERNAME/server/npm/data/nginx/custom/f2b/npm-docker.conf
+PathModified=/home/USERNAME/server/npm/data/nginx/custom/f2b/wordpress-hard.conf
+PathModified=/home/USERNAME/server/npm/data/nginx/custom/f2b/wordpress-soft.conf
+Unit=npmReload.service
+
+[Install]
+WantedBy=multi-user.target

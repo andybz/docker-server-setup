@@ -1,0 +1,10 @@
+[Unit]
+Description=Reload Nginx Proxy Manager so new fail2ban bans apply to proxied sites
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+# wait a moment so a burst of bans causes one reload
+ExecStartPre=/bin/sleep 5
+ExecStart=/bin/sh -c '/usr/bin/docker exec nginx-proxy-manager nginx -t -q && /usr/bin/docker exec nginx-proxy-manager nginx -s reload'
